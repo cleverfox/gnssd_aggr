@@ -1,0 +1,12 @@
+{application, gnss_aggr,
+ [
+  {description, "GNSS aggregation daemon"},
+  {vsn, "1.0"},
+  {id, "gnss_aggr"},
+  {modules,      [gnss_aggr]},
+  {registered,   []},
+  {applications, [kernel, stdlib, lager, bson, mongodb]},
+  {mod, {gnss_aggr, []}},
+  {env, [
+  ]} %%env
+]}. %%application

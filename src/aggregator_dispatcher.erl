@@ -103,7 +103,7 @@ handle_cast(run_queue, State) ->
 			State#state{timer=erlang:send_after(5000,self(),run_queue)};
 		true -> 
 			Fun=fun(Worker) -> 
-						{ok, J} = eredis:q(Worker, [ "rpop", "test" ]),
+						{ok, J} = eredis:q(Worker, [ "rpop", "process:devicedata" ]),
 						J
 				end,
 			BJSON=poolboy:transaction(ga_redis, Fun),
@@ -113,10 +113,13 @@ handle_cast(run_queue, State) ->
 					try mochijson2:decode(BJSON) of
 						{struct,List} when is_list(List) ->
 							Key=mng:proplisttom(List),
-							Tasks=[agg_distance],
-							{ok, Pid} = supervisor:start_child(aggregator_sup,[Key,Tasks]),
-							lager:info("Data aggregator ~p runned ~p",[Key, Pid]),
-							true;
+							Tasks=[agg_distance,agg_distance2],
+							case supervisor:start_child(aggregator_sup,[Key,Tasks]) of
+								{ok, Pid} -> lager:debug("Data aggregator ~p runned ~p",[Key, Pid]),
+											 true;
+								{error, Err} -> lager:error("Can't run data aggregator: ~p",[Err]),
+												error
+							end;
 						_Any -> 
 							lager:error("Can't parse source ~p",[BJSON]),
 							error
@@ -127,7 +130,6 @@ handle_cast(run_queue, State) ->
 					end
 			end,
 			%L: false - no more tasks, true - ok, error 
-			lager:info("Res ~p",[L]),
 			case L of 
 				true -> 
 					gen_server:cast(self(),run_queue),
@@ -135,6 +137,7 @@ handle_cast(run_queue, State) ->
 				false -> 
 					State#state{timer=erlang:send_after(10000,self(),run_queue)};
 				error -> 
+					lager:error("Error ~p",[L]),
 					State#state{timer=erlang:send_after(30000,self(),run_queue)}
 			end
 	end,

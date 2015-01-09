@@ -1,4 +1,4 @@
--module(agg_distance).
+-module(agg_distance2).
 
 -export([process/3]).
 
@@ -49,9 +49,9 @@ process(Data,ExtInfo,_Prev) ->
 	%lager:info("Data ~p",[Data]),
 	
 	{ok, [
-		  {<<"sum_v_odometer">>,OMax-OMin}, 
-		  {<<"pathlen">>, PathLen*1000}, 
-		  {<<"max_speed">>, MaxS},
+		  {<<"sum_v_odometer2">>,OMax-OMin}, 
+		  {<<"pathlen2">>, PathLen*1000}, 
+		  {<<"max_speed2">>, MaxS},
 		  {<<"t">>, MSec*1000000 + Sec}
 		 ]}.
 

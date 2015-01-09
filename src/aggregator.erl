@@ -13,7 +13,7 @@
          terminate/2,
          code_change/3]).
 
--record(state, { doc, task=[], documentdata }).
+-record(state, { docid, task=[], documentdata, documentagd, document, documentappend=[] }).
 
 %%%===================================================================
 %%% API functions
@@ -27,7 +27,7 @@
 %% @end
 %%--------------------------------------------------------------------
 start_link(DocumentID,Aggregations) ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [DocumentID,Aggregations], []).
+    gen_server:start_link(?MODULE, [DocumentID,Aggregations], []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -47,9 +47,20 @@ start_link(DocumentID,Aggregations) ->
 init([DocumentID,Aggregations]) ->
 	lager:info("Document ~p, Aggr ~p",[DocumentID,Aggregations]),
 	gen_server:cast(self(), run_task),
-	DATA=mng:find_one(ga_mongo,<<"devicedata">>,DocumentID),
-	lager:info("Data ~p",[DATA]),
-    {ok, #state{doc=DocumentID, task=Aggregations, documentdata=DATA}}.
+	{DATA}=mng:find_one(ga_mongo,<<"devicedata">>,DocumentID),
+	lager:info("DATA ~p",[DATA]),
+	D=mng:m2proplistr(DATA),
+	{[[{data,Dat}]],D2}=proplists:split(D,[data]),
+	{Agd, D3} = case proplists:split(D2,[aggregated]) of
+					{[[{aggregated,CAgd}]],CD3} ->
+					   	{mng:m2proplistr(CAgd), CD3};
+					_Any ->
+					   	lager:info("Agd2 ~p",[_Any]), {[],D2}
+				end,
+	lager:info("D3   ~p",[D3]),
+	lager:info("Dadg ~p",[Agd]),
+	lager:info("Data ~p",[Dat]),
+    {ok, #state{docid=DocumentID, task=Aggregations, documentagd=Agd, documentdata=Dat, document=D3}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -82,21 +93,34 @@ handle_call(_Request, _From, State) ->
 handle_cast(run_task, State) ->
 	case State#state.task of
 		[] -> 
-			gen_server:cast(aggregator_dispatcher, {finished, State#state.doc}),
+			AppD=[ { <<"aggregated.",K/binary>>, V } || {K,V} <- State#state.documentappend ],
+			Data={'$set', mng:proplisttom(AppD)},
+			Res=poolboy:transaction(ga_mongo, 
+						fun(Worker) ->
+								mongo:update(Worker,<<"devicedata">>,State#state.docid, Data)
+						end),
+			lager:info("Task ~p: Append ~p: ~p",[State#state.docid, AppD, Res ]),
+			gen_server:cast(aggregator_dispatcher, {finished, State#state.docid}),
 			{stop, normal, State};
 		[CTask|Rest] ->
-			Data=[a,b,c],
-			try CTask:process(Data,State) of 
+			Append=case catch apply(CTask,process,[
+												   State#state.documentdata,
+												   {State#state.document,State#state.documentagd},
+												   State#state.documentappend
+												  ]) of 
 				{ok, AppData} -> 
-					lager:info("Update ~p: ~p",[State#state.doc, AppData]);
+						   MN=list_to_binary(atom_to_list(CTask)),
+						   State#state.documentappend++[ {<<MN/binary,".",K/binary>>,V} || {K,V} <- AppData ];
 				_Any -> 
-					lager:error("Something went wrong with taks ~p: ~p",[CTask, _Any])
-			catch 
-				error:X ->
-					lager:error("Can't run ~p task: ~p",[CTask, X])
+						   lager:error("Something went wrong with taks ~p: ~p",[CTask, _Any]),
+						   State#state.documentappend
+			%catch 
+			%	error:X ->
+			%		lager:error("Can't run ~p task: ~p",[CTask, X]),
+			%		State#state.documentappend
 			end,
 			gen_server:cast(self(), run_task),
-			{noreply, State#state{task=Rest}}
+			{noreply, State#state{task=Rest,documentappend=Append}}
 	end;
 
 	

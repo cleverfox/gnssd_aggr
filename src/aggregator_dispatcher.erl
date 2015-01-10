@@ -55,7 +55,12 @@ init([Host, Port, Chan]) ->
 	eredis_sub:controlling_process(Pid),
 	eredis_sub:subscribe(Pid, [Chan]),
 	lager:info("Eredis up ~p subscribe ~p",[Pid,Chan]),
-	{ok, #state{redispid=Pid,chan=Chan}}.
+	{ok, #state{
+			redispid=Pid,
+			chan=Chan,
+			timer=erlang:send_after(10000,self(),run_queue)
+		   }
+	}.
 
 %%--------------------------------------------------------------------
 %% @private

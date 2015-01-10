@@ -2,7 +2,7 @@
 
 -export([process/3]).
 
-process(Data,ExtInfo,_Prev) ->
+process(Data,{_ExtInfo,_PrevAggregated},_Prev) ->
 	Fx = fun(Elm,{Min,Max,MaxS,PPos,PathSum}) ->
 				 %[{dt,1420722010},{position,[37.59247079869102,51.620521248073814]},{dir,266.4217921976619},{sp,0},{v_fuel,25.10293735686435},{v_odometer,9308850.076139404}]
 				 Odometer=proplists:get_value(v_odometer,Elm),
@@ -42,10 +42,14 @@ process(Data,ExtInfo,_Prev) ->
 			{Min1,Max1,MaxS1,Pos,PathSum+Dist}
 		 end,
 	{MSec,Sec,_} = now(),
-	{OMin, OMax, MaxS, _, PathLen}=lists:foldl(Fx, {undefinded, 0, 0, undefined, 0}, Data),
+	{OMin0, OMax, MaxS, _, PathLen}=lists:foldl(Fx, {undefinded, 0, 0, undefined, 0}, Data),
+	OMin=case OMin0 of
+			 Num when is_integer(Num) -> Num;
+			 Num when is_float(Num) -> Num;
+			 _ -> 0
+		 end,
 
-	%lager:info("L ~p",[L]),
-	lager:info("Ext ~p",[ExtInfo]),
+	%lager:info("Ext ~p",[ExtInfo]),
 	%lager:info("Data ~p",[Data]),
 	
 	{ok, [

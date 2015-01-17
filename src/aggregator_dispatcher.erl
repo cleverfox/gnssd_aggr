@@ -15,8 +15,8 @@
 
 -record(state, {redispid,
 				chan,
-				max_worker=5,
-				max_express=5,
+				max_worker=50,
+				max_express=20,
 				timer
 			   }).
 
@@ -90,62 +90,114 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_cast({finished, _}, State) ->
+	handle_cast(run_queue, State);
+	%{noreply, State};
+
 handle_cast(run_queue, State) ->
 	case State#state.timer of 
 		undefined -> ok;
 		_ -> erlang:cancel_timer(State#state.timer)
 	end,
-	Allow=case proplists:get_value(workers,supervisor:count_children(aggregator_sup)) of
+	{AllowNorm,AllowExpress}=case proplists:get_value(workers,supervisor:count_children(aggregator_sup)) of
 		undefined -> 
 			lager:error("Can't get worker count"),
 			false;
 		M when is_integer(M) ->
-				  State#state.max_worker > M 
+									 lager:info("Workers ~p",[M]),
+								 { 
+								  State#state.max_worker > M,
+								  State#state.max_worker+State#state.max_express > M
+								 }
 		  end,
-	lager:debug("Allow run queue ~p",[Allow]),
-	S2=case Allow of
-		false -> 
-			State#state{timer=erlang:send_after(5000,self(),run_queue)};
-		true -> 
-			Fun=fun(Worker) -> 
-						{ok, J} = eredis:q(Worker, [ "rpop", "process:devicedata" ]),
-						J
-				end,
-			BJSON=poolboy:transaction(ga_redis, Fun),
-			L=case BJSON of 
-				undefined -> false;
-				_ -> 
-					try mochijson2:decode(BJSON) of
-						{struct,List} when is_list(List) ->
-							Key=mng:proplisttom(List),
-							Tasks=[agg_distance,agg_distance2],
-							case supervisor:start_child(aggregator_sup,[Key,Tasks]) of
-								{ok, Pid} -> lager:debug("Data aggregator ~p runned ~p",[Key, Pid]),
-											 true;
-								{error, Err} -> lager:error("Can't run data aggregator: ~p",[Err]),
-												error
-							end;
-						_Any -> 
-							lager:error("Can't parse source ~p",[BJSON]),
-							error
-					catch
-						error:Err ->
-							lager:error("Can't parse source ~p",[Err]),
-							error
-					end
-			end,
-			%L: false - no more tasks, true - ok, error 
-			case L of 
-				true -> 
-					gen_server:cast(self(),run_queue),
-					State;
-				false -> 
-					State#state{timer=erlang:send_after(10000,self(),run_queue)};
-				error -> 
-					lager:error("Error ~p",[L]),
-					State#state{timer=erlang:send_after(30000,self(),run_queue)}
-			end
-	end,
+	lager:debug("Allow run normal queue ~p, express ~p",[AllowNorm,AllowExpress]),
+	S2=case {AllowExpress,AllowNorm} of
+		   {false, false} -> 
+			   State#state{timer=erlang:send_after(10000,self(),run_queue)};
+		   { _ , _ } -> 
+			   ExpressFun=fun(Worker) -> 
+							  eredis:q(Worker, [ "rpop", "aggregate:express" ])
+					  end,
+			   {ok, ExpressID}=poolboy:transaction(ga_redis, ExpressFun),
+			   L=case ExpressID of 
+					 undefined -> 
+						 case AllowNorm of
+							 false ->
+								 false;
+							 _ ->
+								 NormalFun=fun(Worker) -> 
+												   eredis:q(Worker, [ "rpop", "aggregate:devicedata" ])
+										   end,
+								 {ok, NormalJSON}=poolboy:transaction(ga_redis, NormalFun),
+								 case NormalJSON of 
+									 undefined -> false;
+									 _ -> 
+										 try mochijson2:decode(NormalJSON) of
+											 {struct,List} when is_list(List) ->
+												 Key=mng:proplisttom(List),
+												 Tasks=[agg_distance,agg_distance2],
+												 case supervisor:start_child(aggregator_sup,[Key,Tasks]) of
+													 {ok, Pid} -> lager:info("Data aggregator ~p runned ~p",[Key, Pid]),
+																  true;
+													 {error, Err} -> lager:error("Can't run data aggregator: ~p",[Err]),
+																	 error
+												 end;
+											 _Any -> 
+												 lager:error("Can't parse source ~p",[NormalJSON]),
+												 error
+										 catch
+											 error:Err ->
+												 lager:error("Can't parse source ~p",[Err]),
+												 error
+										 end
+								 end
+						 end;
+					 EID -> 
+						 lager:info("EID ~p",[EID]),
+						 Tasks=[agg_distance,agg_distance2],
+						 case supervisor:start_child(aggregator_sup,[EID,Tasks]) of
+							 {ok, Pid} -> lager:debug("Data aggregator ~p runned ~p",[EID, Pid]),
+										  true;
+							 {error, Err} -> lager:error("Can't run data aggregator: ~p",[Err]),
+											 {error, Err}
+						 end
+						 %try mochijson2:decode(ExpressJSON) of
+						%	 {struct,List} when is_list(List) ->
+						%		 Key=mng:proplisttom(List),
+						%		 Tasks=[agg_distance,agg_distance2],
+						%		 case supervisor:start_child(aggregator_sup,[Key,Tasks]) of
+						%			 {ok, Pid} -> lager:debug("Data aggregator ~p runned ~p",[Key, Pid]),
+						%						  true;
+						%			 {error, Err} -> lager:error("Can't run data aggregator: ~p",[Err]),
+						%							 error
+						%		 end;
+						%	 _Any -> 
+						%		 lager:error("Can't parse source ~p",[ExpressJSON]),
+						%		 error
+						% catch
+						%	 error:Err ->
+						%		 lager:error("Can't parse source ~p",[Err]),
+						%		 error
+						 %end
+				 end,
+
+
+
+			   %L: false - no more tasks, true - ok, error 
+			   case L of 
+				   true -> 
+					   gen_server:cast(self(),run_queue),
+					   State;
+				   false -> 
+					   State#state{timer=erlang:send_after(10000,self(),run_queue)};
+				   error -> 
+					   lager:error("Error ~p",[L]),
+					   State#state{timer=erlang:send_after(30000,self(),run_queue)};
+				   {error,_} -> 
+					   lager:error("Error ~p",[L]),
+					   State#state{timer=erlang:send_after(30000,self(),run_queue)}
+			   end
+	   end,
     {noreply, S2};
 
 handle_cast(_Msg, State) ->

@@ -13,7 +13,7 @@
          terminate/2,
          code_change/3]).
 
--record(state, { docid, task=[], documentdata, documentagd, document, documentappend=[] }).
+-record(state, { docid, task=[], documentdata, documentagd, document, documentappend=[], device_id, hour, type }).
 
 %%%===================================================================
 %%% API functions
@@ -47,20 +47,30 @@ start_link(DocumentID,Aggregations) ->
 init([DocumentID,Aggregations]) ->
 	lager:info("Document ~p, Aggr ~p",[DocumentID,Aggregations]),
 	gen_server:cast(self(), run_task),
-	{DATA}=mng:find_one(ga_mongo,<<"devicedata">>,DocumentID),
-	lager:info("DATA ~p",[DATA]),
-	D=mng:m2proplistr(DATA),
-	{[[{data,Dat}]],D2}=proplists:split(D,[data]),
-	{Agd, D3} = case proplists:split(D2,[aggregated]) of
-					{[[{aggregated,CAgd}]],CD3} ->
-					   	{mng:m2proplistr(CAgd), CD3};
-					_Any ->
-					   	lager:info("Agd2 ~p",[_Any]), {[],D2}
-				end,
-	lager:info("D3   ~p",[D3]),
-	lager:info("Dadg ~p",[Agd]),
-	lager:info("Data ~p",[Dat]),
-    {ok, #state{docid=DocumentID, task=Aggregations, documentagd=Agd, documentdata=Dat, document=D3}}.
+	case mng:find_one(ga_mongo,<<"devicedata">>,did2key(DocumentID)) of
+		{DATA} ->
+			D=mng:m2proplistr(DATA),
+			lager:info("DATA ~p~n~p",[DATA,D]),
+			{Dat, D2} = case proplists:split(D,[data]) of
+							{[[{data,Da1}]],Da2} -> {Da1,Da2};
+							{_,Da2} -> {[],Da2}
+						end,
+			{Agd, D3} = case proplists:split(D2,[aggregated]) of
+							{[[{aggregated,CAgd}]],CD3} ->
+								{mng:m2proplistr(CAgd), CD3};
+							_Any ->
+								lager:info("Agd2 ~p",[_Any]), {[],D2}
+						end,
+			Dev=proplists:get_value(device,D3),
+			Hr=proplists:get_value(hour,D3),
+			Type=proplists:get_value(type,D3),
+			lager:debug("D3   ~p",[D3]),
+			lager:debug("Dadg ~p",[Agd]),
+			%lager:info("Data ~p",[Dat]),
+			{ok, #state{docid=DocumentID, task=Aggregations, documentagd=Agd, documentdata=Dat, document=D3,
+					   device_id=Dev, hour=Hr, type=Type}};
+		_ -> {stop, nodocument}
+	end.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -95,11 +105,44 @@ handle_cast(run_task, State) ->
 		[] -> 
 			AppD=[ { <<"aggregated.",K/binary>>, V } || {K,V} <- State#state.documentappend ],
 			Data={'$set', mng:proplisttom(AppD)},
+			BinHr=integer_to_binary(State#state.hour),
+			AggrD=[ { <<BinHr/binary,".",K/binary>>, V } || {K,V} <- State#state.documentappend ],
 			Res=poolboy:transaction(ga_mongo, 
 						fun(Worker) ->
-								mongo:update(Worker,<<"devicedata">>,State#state.docid, Data)
+								lager:info("Update ~p ~p ~p",[Worker,did2key(State#state.docid), Data]),
+								mongo:update(Worker,<<"devicedata">>,did2key(State#state.docid), Data)
 						end),
-			lager:info("Task ~p: Append ~p: ~p",[State#state.docid, AppD, Res ]),
+			Mon=gpstools:floor(State#state.hour/720),
+			mng:ins_update(ga_mongo,<<"devicedata">>,{
+										type, <<"aggregated">>, 
+										device_id, State#state.device_id, 
+										ymon, Mon 
+									   }, mng:proplisttom(AggrD)),
+
+			lager:info("Task ~p: Append ~p: ~p",[did2key(State#state.docid), AppD, Res ]),
+			{MSec,Sec,_}=now(),
+			UnixTime=MSec*1000000+Sec,
+
+			case State#state.docid of
+				DID when is_binary(DID) ->
+					NormalFun=fun(Worker) -> 
+									  eredis:q(Worker, [ 
+														"setex", 
+														"aggregate:done:"++binary_to_list(DID), 
+														3600, 
+														integer_to_list(UnixTime) ]),
+									  eredis:q(Worker, [ 
+														"publish", 
+														"aggregate:done",
+														binary_to_list(DID) ])
+							  end,
+					poolboy:transaction(ga_redis, NormalFun);
+				_ ->
+					ok
+			end,
+
+%			erlang:send_after(1000,self(),{finish}),
+%			{noreply, State};
 			gen_server:cast(aggregator_dispatcher, {finished, State#state.docid}),
 			{stop, normal, State};
 		[CTask|Rest] ->
@@ -137,8 +180,12 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_info({finish},State) ->
+	gen_server:cast(aggregator_dispatcher, {finished, State#state.docid}),
+	{stop, normal, State};
 handle_info(_Info, State) ->
     {noreply, State}.
+
 
 %%--------------------------------------------------------------------
 %% @private
@@ -168,3 +215,10 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+did2key(DID) when is_binary(DID) ->
+	{'_id',mng:hex2id(DID)};
+
+did2key(DID) when is_tuple(DID) ->
+	DID.
+

@@ -146,6 +146,7 @@ handle_cast(run_task, State) ->
 			gen_server:cast(aggregator_dispatcher, {finished, State#state.docid}),
 			{stop, normal, State};
 		[CTask|Rest] ->
+			lager:info("Run ~p",[CTask]),
 			Append=case catch apply(CTask,process,[
 												   State#state.documentdata,
 												   {State#state.document,State#state.documentagd},
@@ -155,7 +156,11 @@ handle_cast(run_task, State) ->
 						   MN=list_to_binary(atom_to_list(CTask)),
 						   State#state.documentappend++[ {<<MN/binary,".",K/binary>>,V} || {K,V} <- AppData ];
 				_Any -> 
-						   lager:error("Something went wrong with taks ~p: ~p",[CTask, _Any]),
+						   lager:error("Something went wrong with task ~p: ~p",[CTask, _Any]),
+						   lists:map(fun(E)->
+											 lager:error("At ~p",[E])
+									 end,erlang:get_stacktrace()),
+
 						   State#state.documentappend
 			%catch 
 			%	error:X ->

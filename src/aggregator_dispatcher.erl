@@ -135,7 +135,8 @@ handle_cast(run_queue, State) ->
 										 try mochijson2:decode(NormalJSON) of
 											 {struct,List} when is_list(List) ->
 												 Key=mng:proplisttom(List),
-												 Tasks=[agg_distance,agg_distance2],
+												 % Non-Express
+												 Tasks=[agg_distance], 
 												 case supervisor:start_child(aggregator_sup,[Key,Tasks]) of
 													 {ok, Pid} -> lager:info("Data aggregator ~p runned ~p",[Key, Pid]),
 																  true;
@@ -154,7 +155,7 @@ handle_cast(run_queue, State) ->
 						 end;
 					 EID -> 
 						 lager:info("EID ~p",[EID]),
-						 Tasks=[agg_distance,agg_distance2],
+						 Tasks=[agg_distance],
 						 case supervisor:start_child(aggregator_sup,[EID,Tasks]) of
 							 {ok, Pid} -> lager:debug("Data aggregator ~p runned ~p",[EID, Pid]),
 										  true;

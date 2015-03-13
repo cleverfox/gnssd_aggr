@@ -15,10 +15,33 @@
 		 }).
 
 
-process(Data,{_ExtInfo,_PrevAggregated},_Prev) ->
-	lager:info("Ext ~p",[_ExtInfo]),
+findFirst([],_) ->
+	undefined;
+findFirst([L|Rest],Time) ->
+	case L#pi_fuel_pdi.dt>=Time of
+		true -> 
+			L;
+		_ -> 
+			findFirst(Rest,Time)
+	end.
 
-	Averages=10,
+process(Data,{ExtInfo,_PrevAggregated},_Prev) ->
+	CHour=proplists:get_value(hour,ExtInfo),
+	Averages=90,
+	PH=try case proplists:get_value(fetchfun,ExtInfo) of
+			   Fu when is_function(Fu) ->
+				   BegTime=(CHour*3600)-Averages,
+				   DATA=Fu(prev),
+				   DevData=proplists:get_value(data,DATA),
+				   lists:filter(fun(L) ->
+										proplists:get_value(dt,L)>=BegTime
+								end, DevData)
+		   end
+	   catch _:_ ->
+				 []
+	   end,
+	%lager:debug("PrevHr prepend ~p",[PH]),
+
 	IHist=lists:filtermap(
 			fun(DS) ->
 					case proplists:get_value(dt,DS) of
@@ -34,16 +57,28 @@ process(Data,{_ExtInfo,_PrevAggregated},_Prev) ->
 									}
 							end
 					end
-			end, Data),
+			end, PH++Data),
 	%IH1=[ #pi_fuel_pdi{ dt=T, value=L } || {T,L} <- IHist ],
 	T1=traverse(IHist,[],[],Averages,a),
 	T2=traverse(T1,[],[],Averages,b),
-	[First|_]=T2,
+	First=findFirst(T2,CHour*3600),
 	[Last|_]=T1,
-	TotalDiff=Last#pi_fuel_pdi.value - First#pi_fuel_pdi.value,
+	TotalDiff=
+	if Last#pi_fuel_pdi.prevc > 1 ->
+		   Last#pi_fuel_pdi.prevsu/Last#pi_fuel_pdi.prevc;
+	   true ->
+		   Last#pi_fuel_pdi.value 
+	end
+	- 
+	if First#pi_fuel_pdi.prevc > 1 ->
+		   First#pi_fuel_pdi.prevsu/First#pi_fuel_pdi.prevc;
+	   true ->
+		   First#pi_fuel_pdi.value 
+	end,
 
-	Events=findev(T2,Averages,0,300),
-	lager:info("FE ~p",[Events]),
+	Threshold=300,
+	Events=findev(T2,Averages,0,Threshold),
+	lager:info("Found fuel events ~p",[Events]),
 	Changes=lists:foldl(fun({_,Amount},Sum) ->
 						Sum+Amount
 				end, 0, Events),
@@ -51,11 +86,13 @@ process(Data,{_ExtInfo,_PrevAggregated},_Prev) ->
 
 	lager:info("Delta ~p / ~p",[TotalDiff, TotalDiff - Changes]),
 
-	{ok, [
+	throw({ok, [
 		  {<<"sum">>,TotalDiff - Changes},
+		  {<<"averages">>,Averages},
+		  {<<"threshold">>,Threshold},
 		  {<<"diff">>,TotalDiff},
 		  {<<"events">>,[ {dt,EvT,amount,EvA} || {EvT,EvA} <-Events]}
-		 ]}.
+		 ]}).
 
 findev([],_,_,_) ->
 	[];
@@ -67,7 +104,9 @@ findev([A1,A2|Rest],Averages,LastEv,Thr) ->
 	   A1#pi_fuel_pdi.postc == 0 orelse
 	   A2#pi_fuel_pdi.postc == 0 ->
 		   findev([A2|Rest],Averages,LastEv,Thr);
-	   A1#pi_fuel_pdi.dt<LastEv+Averages ->
+	   LastEv+Averages > A1#pi_fuel_pdi.dt ->
+		   findev([A2|Rest],Averages,LastEv,Thr);
+	   A1#pi_fuel_pdi.dt >= A2#pi_fuel_pdi.dt ->
 		   findev([A2|Rest],Averages,LastEv,Thr);
 	   true ->
 
@@ -115,35 +154,42 @@ traverse([E1|Rest],[],Acc,AvgT,Dir) ->
 traverse([Cur|Rest],[Prev|Passed],Acc,AvgT,Dir) ->
 	%lager:debug("~p~n~p ... ~n~p",[length(Acc),Prev,Cur]),
 	CurT=Cur#pi_fuel_pdi.dt,
-	MinT=CurT-AvgT,
-	MaxT=CurT+AvgT,
-	DxDt=(Cur#pi_fuel_pdi.value-Prev#pi_fuel_pdi.value) / (CurT-Prev#pi_fuel_pdi.dt),
-	Acc1=lists:filter(fun({Xt,_,_}) ->
-							  case Dir of
-								  a -> Xt>=MinT;
-								  b -> MaxT>=Xt
-							  end
-					  end,Acc)++[{Cur#pi_fuel_pdi.dt,DxDt,Cur#pi_fuel_pdi.value}],
-	{RCnt,RSum,USum}=lists:foldl(
-				  fun({_,Dxt,Dvl},{Cnt,Sum,SU}) ->
-						  {Cnt+1,Sum+Dxt,Dvl+SU}
-				  end,
-				  {0,0,0},
-				  Acc1),
-	Cur1=case Dir of
-			 a ->
-				 Cur#pi_fuel_pdi{
-				   prevc=RCnt,
-				   prevsd=RSum,
-				   prevsu=USum
-				  };
-			 b ->
-				 Cur#pi_fuel_pdi{
-				   postc=RCnt,
-				   postsd=RSum,
-				   postsu=USum
-				  }
-		 end,
+	PrevT=Prev#pi_fuel_pdi.dt,
+	if Dir == a andalso PrevT >= CurT ->
+		   traverse(Rest,[Prev|Passed],Acc,AvgT,Dir);
+	   Dir == b andalso CurT >= PrevT ->
+		   traverse(Rest,[Prev|Passed],Acc,AvgT,Dir);
+	   true ->
+		   MinT=CurT-AvgT,
+		   MaxT=CurT+AvgT,
+		   DxDt=(Cur#pi_fuel_pdi.value-Prev#pi_fuel_pdi.value) / (CurT-PrevT),
+		   Acc1=lists:filter(fun({Xt,_,_}) ->
+									 case Dir of
+										 a -> Xt>=MinT;
+										 b -> MaxT>=Xt
+									 end
+							 end,Acc)++[{Cur#pi_fuel_pdi.dt,DxDt,Cur#pi_fuel_pdi.value}],
+		   {RCnt,RSum,USum}=lists:foldl(
+							  fun({_,Dxt,Dvl},{Cnt,Sum,SU}) ->
+									  {Cnt+1,Sum+Dxt,Dvl+SU}
+							  end,
+							  {0,0,0},
+							  Acc1),
+		   Cur1=case Dir of
+					a ->
+						Cur#pi_fuel_pdi{
+						  prevc=RCnt,
+						  prevsd=RSum,
+						  prevsu=USum
+						 };
+					b ->
+						Cur#pi_fuel_pdi{
+						  postc=RCnt,
+						  postsd=RSum,
+						  postsu=USum
+						 }
+				end,
 
-	traverse(Rest,[Cur1,Prev|Passed],Acc1,AvgT,Dir).
+		   traverse(Rest,[Cur1,Prev|Passed],Acc1,AvgT,Dir)
+	end.
 

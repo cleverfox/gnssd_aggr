@@ -13,7 +13,18 @@
          terminate/2,
          code_change/3]).
 
--record(state, { docid, task=[], documentdata, documentagd, document, documentappend=[], device_id, hour, type }).
+-record(state, { 
+		  docid, 
+		  task=[], 
+		  documentdata, 
+		  documentagd, 
+		  document, 
+		  documentappend=[], 
+		  device_id, 
+		  hour, 
+		  type,
+		  fetchfun
+		 }).
 
 %%%===================================================================
 %%% API functions
@@ -50,7 +61,7 @@ init([DocumentID,Aggregations]) ->
 	case mng:find_one(ga_mongo,<<"devicedata">>,did2key(DocumentID)) of
 		{DATA} ->
 			D=mng:m2proplistr(DATA),
-			lager:info("DATA ~p~n~p",[DATA,D]),
+			%lager:info("DATA ~p~n~p",[DATA,D]),
 			{Dat, D2} = case proplists:split(D,[data]) of
 							{[[{data,Da1}]],Da2} -> {Da1,Da2};
 							{_,Da2} -> {[],Da2}
@@ -67,8 +78,34 @@ init([DocumentID,Aggregations]) ->
 			lager:debug("D3   ~p",[D3]),
 			lager:debug("Dadg ~p",[Agd]),
 			%lager:info("Data ~p",[Dat]),
-			{ok, #state{docid=DocumentID, task=Aggregations, documentagd=Agd, documentdata=Dat, document=D3,
-					   device_id=Dev, hour=Hr, type=Type}};
+			{ok, #state{
+					docid=DocumentID, 
+					task=Aggregations,
+				   	documentagd=Agd, 
+					documentdata=Dat, 
+					document=D3,
+					device_id=Dev, 
+					hour=Hr, 
+					type=Type,
+					fetchfun=fun(FHour) ->
+									 Hour=case FHour of
+											  _ when is_integer(FHour) -> 
+												  FHour;
+											  prev -> 
+												  Hr-1;
+											  next ->
+												  Hr+1;
+											  _ ->
+												  throw({"Bad hour",FHour})
+										  end,
+									 case mng:find_one(ga_mongo,<<"devicedata">>,{device,Dev,hour,Hour}) of
+										{DATAx} ->
+											 mng:m2proplistr(DATAx);
+											_ -> nodocument
+									 end
+							 end
+				   }
+			};
 		_ -> {stop, nodocument}
 	end.
 
@@ -115,8 +152,8 @@ handle_cast(run_task, State) ->
 			Mon=gpstools:floor(State#state.hour/720),
 			mng:ins_update(ga_mongo,<<"devicedata">>,{
 										type, <<"aggregated">>, 
-										device_id, State#state.device_id, 
-										ymon, Mon 
+										device, State#state.device_id, 
+										umon, Mon 
 									   }, mng:proplisttom(AggrD)),
 
 			lager:info("Task ~p: Append ~p: ~p",[did2key(State#state.docid), AppD, Res ]),
@@ -149,7 +186,10 @@ handle_cast(run_task, State) ->
 			lager:info("Run ~p",[CTask]),
 			Append=case catch apply(CTask,process,[
 												   State#state.documentdata,
-												   {State#state.document,State#state.documentagd},
+												   {
+													State#state.document ++ [{fetchfun, State#state.fetchfun}],
+													State#state.documentagd
+												   },
 												   State#state.documentappend
 												  ]) of 
 				{ok, AppData} -> 

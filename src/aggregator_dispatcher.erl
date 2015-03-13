@@ -104,7 +104,7 @@ handle_cast(run_queue, State) ->
 			lager:error("Can't get worker count"),
 			false;
 		M when is_integer(M) ->
-									 lager:info("Workers ~p",[M]),
+									 %lager:info("Workers ~p",[M]),
 								 { 
 								  State#state.max_worker > M,
 								  State#state.max_worker+State#state.max_express > M
@@ -120,7 +120,7 @@ handle_cast(run_queue, State) ->
 					  end,
 			   {ok, ExpressID}=poolboy:transaction(ga_redis, ExpressFun),
 			   L=case ExpressID of 
-					 undefined -> 
+					 undefined ->  %non express
 						 case AllowNorm of
 							 false ->
 								 false;
@@ -136,7 +136,7 @@ handle_cast(run_queue, State) ->
 											 {struct,List} when is_list(List) ->
 												 Key=mng:proplisttom(List),
 												 % Non-Express
-												 Tasks=[agg_distance], 
+												 Tasks=[agg_distance,agg_fuelmeter,agg_fuelgauge], 
 												 case supervisor:start_child(aggregator_sup,[Key,Tasks]) of
 													 {ok, Pid} -> lager:info("Data aggregator ~p runned ~p",[Key, Pid]),
 																  true;
@@ -153,9 +153,24 @@ handle_cast(run_queue, State) ->
 										 end
 								 end
 						 end;
-					 EID -> 
-						 lager:info("EID ~p",[EID]),
-						 Tasks=[agg_distance],
+					 EID0 -> %express
+						 lager:debug("Raw EID ~p",[EID0]),
+						 {EID,Tasks}=case binary:split(EID0,[<<":">>]) of
+										[A,BTsk] ->
+											 Tsk1=lists:filtermap(
+													fun(BTask) ->
+															L=binary_to_list(BTask),
+															try 
+																{true,list_to_existing_atom(L)}
+															catch
+																_:_ -> false
+															end
+													end,
+													binary:split(BTsk,[<<";">>],[global])),
+											 {A,Tsk1};
+										 _ -> {EID0,[agg_distance]}
+									end,
+						 lager:info("EID ~p, ~p",[EID,Tasks]),
 						 case supervisor:start_child(aggregator_sup,[EID,Tasks]) of
 							 {ok, Pid} -> lager:debug("Data aggregator ~p runned ~p",[EID, Pid]),
 										  true;

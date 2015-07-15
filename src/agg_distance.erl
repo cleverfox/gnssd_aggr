@@ -1,8 +1,8 @@
 -module(agg_distance).
 
--export([process/3]).
+-export([process/4]).
 
-process(Data,{_ExtInfo,_PrevAggregated},_Prev) ->
+process(Data,{_ExtInfo,_PrevAggregated},_Prev,_Config) ->
 	Fx = fun(Elm,{Min,Max,MaxS,PPos,PathSum}) ->
 				 %[{dt,1420722010},{position,[37.59247079869102,51.620521248073814]},{dir,266.4217921976619},{sp,0},{v_fuel,25.10293735686435},{v_odometer,9308850.076139404}]
 				 Odometer=proplists:get_value(v_odometer,Elm),

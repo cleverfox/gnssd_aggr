@@ -1,8 +1,9 @@
 -module(agg_fuelmeter).
 
--export([process/3]).
+-export([process/4]).
 
-process(Data,{_ExtInfo,_PrevAggregated},_Prev) ->
+process(Data,{_ExtInfo,_PrevAggregated},_Prev,_Config) ->
+	{MSec,Sec,_} = now(),
 	Fx = fun(Elm,{FSum}) ->
 				 case proplists:get_value(v_tfuel,Elm) of
 					 I when is_integer(I) ->
@@ -14,8 +15,7 @@ process(Data,{_ExtInfo,_PrevAggregated},_Prev) ->
 		 end,
 	{Fuel}=lists:foldl(Fx, {0}, Data),
 	{ok, [
-		  {<<"sum">>,Fuel}
+		  {<<"sum">>,Fuel},
+		  {<<"t">>, MSec*1000000 + Sec}
 		 ]}.
-
-
 

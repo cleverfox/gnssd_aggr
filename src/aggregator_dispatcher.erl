@@ -136,7 +136,7 @@ handle_cast(run_queue, State) ->
 											 {struct,List} when is_list(List) ->
 												 Key=mng:proplisttom(List),
 												 % Non-Express
-												 Tasks=[agg_distance,agg_fuelmeter,agg_fuelgauge], 
+												 Tasks=default, %[agg_distance,agg_fuelmeter,agg_fuelgauge], 
 												 case supervisor:start_child(aggregator_sup,[Key,Tasks]) of
 													 {ok, Pid} -> lager:info("Data aggregator ~p runned ~p",[Key, Pid]),
 																  true;
@@ -170,7 +170,7 @@ handle_cast(run_queue, State) ->
 											 {A,Tsk1};
 										 _ -> {EID0,[agg_distance]}
 									end,
-						 lager:info("EID ~p, ~p",[EID,Tasks]),
+						 lager:debug("EID ~p, ~p",[EID,Tasks]),
 						 case supervisor:start_child(aggregator_sup,[EID,Tasks]) of
 							 {ok, Pid} -> lager:debug("Data aggregator ~p runned ~p",[EID, Pid]),
 										  true;

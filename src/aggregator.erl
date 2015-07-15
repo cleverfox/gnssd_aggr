@@ -21,9 +21,11 @@
 		  document, 
 		  documentappend=[], 
 		  device_id, 
+		  replace=[],
 		  hour, 
 		  type,
-		  fetchfun
+		  fetchfun,
+		  config
 		 }).
 
 %%%===================================================================
@@ -55,8 +57,8 @@ start_link(DocumentID,Aggregations) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([DocumentID,Aggregations]) ->
-	lager:info("Document ~p, Aggr ~p",[DocumentID,Aggregations]),
+init([DocumentID,Tasks]) ->
+	lager:info("Document ~p, Aggr ~p",[DocumentID,Tasks]),
 	gen_server:cast(self(), run_task),
 	case mng:find_one(ga_mongo,<<"devicedata">>,did2key(DocumentID)) of
 		{DATA} ->
@@ -78,7 +80,82 @@ init([DocumentID,Aggregations]) ->
 			lager:debug("D3   ~p",[D3]),
 			lager:debug("Dadg ~p",[Agd]),
 			%lager:info("Data ~p",[Dat]),
+			%
+			{DevCfg,AgCfg,AgReplace}=try
+					   RedFun=fun(Worker) -> 
+							   eredis:q(Worker, [ 
+												 "get", 
+												 "device:config:"++integer_to_list(Dev)
+												])
+					   end,
+					   {ok,BinCfg}=poolboy:transaction(ga_redis, RedFun),
+					   WholeCfg=binary_to_term(BinCfg),
+					   {
+						WholeCfg, 
+						case proplists:get_value(aggregator_config,WholeCfg) of
+							undefined -> 
+								[];
+							AGC when is_list(AGC) ->
+								lists:map(fun
+											  ({K,V}) when is_atom(K) -> 
+												  {K,V};
+											  ({K,V}) when is_list(K) -> 
+												  Name=try 
+														   list_to_existing_atom(K)
+													   catch 
+														   _:_ -> K
+													   end,
+												  {Name, V};
+											  (V) -> 
+												  {unknown, V}
+										  end, AGC)
+						end,
+						case proplists:get_value(aggregators_alias,WholeCfg) of
+							undefined -> 
+								[];
+							AGC when is_list(AGC) ->
+								lists:map(fun
+											  ({K,V}) -> 
+												  {to_eatom(K),to_eatom(V)};
+											  (V) -> 
+												  {unknown, V}
+										  end, AGC)
+						end
+					   }
+					   
+				   catch ErC:ErR ->
+							 lager:notice("DevCfg error ~p:~p",[ErC,ErR]),
+							 {[],[],[]}
+				   end,
+			%lager:info("AgReplace ~p",[AgReplace]),
+			Aggregations1=case Tasks of
+							  default -> 
+								 lager:info("Agg ~p",[DevCfg]),
+								  case proplists:get_value(aggregators_autorun,DevCfg) of
+									  Aggs0 when is_list(Aggs0) ->
+										  lists:filtermap(fun
+															  (E) when is_atom(E) ->
+																  {true, E};
+																	(E) when is_list(E) ->
+																  try 
+																	  {true, list_to_existing_atom(E)}
+																  catch _:_ -> false
+																  end;
+																	(_) -> false
+														  end,Aggs0);
+									  _ ->
+										  [agg_distance,agg_fuelmeter,agg_fuelgauge3]
+								  end;
+							  _ ->
+								  Tasks 
+						  end,
+			Aggregations=[agg_distance]++(Aggregations1--[agg_distance]),
 			{ok, #state{
+					config=#{
+					  device=>DevCfg,
+					  aggregators=>maps:from_list(AgCfg)
+					 },
+					replace=AgReplace,
 					docid=DocumentID, 
 					task=Aggregations,
 				   	documentagd=Agd, 
@@ -137,16 +214,14 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_cast(run_task, State) ->
-	case State#state.task of
-		[] -> 
+handle_cast(run_task, State) when State#state.task==[] ->
 			AppD=[ { <<"aggregated.",K/binary>>, V } || {K,V} <- State#state.documentappend ],
 			Data={'$set', mng:proplisttom(AppD)},
 			BinHr=integer_to_binary(State#state.hour),
 			AggrD=[ { <<BinHr/binary,".",K/binary>>, V } || {K,V} <- State#state.documentappend ],
 			Res=poolboy:transaction(ga_mongo, 
 						fun(Worker) ->
-								lager:info("Update ~p ~p ~p",[Worker,did2key(State#state.docid), Data]),
+								lager:debug("Update ~p ~p ~p",[Worker,did2key(State#state.docid), Data]),
 								mongo:update(Worker,<<"devicedata">>,did2key(State#state.docid), Data)
 						end),
 			Mon=gpstools:floor(State#state.hour/720),
@@ -156,7 +231,7 @@ handle_cast(run_task, State) ->
 										umon, Mon 
 									   }, mng:proplisttom(AggrD)),
 
-			lager:info("Task ~p: Append ~p: ~p",[did2key(State#state.docid), AppD, Res ]),
+			lager:debug("Task ~p: Append ~p: ~p",[did2key(State#state.docid), AppD, Res ]),
 			{MSec,Sec,_}=now(),
 			UnixTime=MSec*1000000+Sec,
 
@@ -182,34 +257,43 @@ handle_cast(run_task, State) ->
 %			{noreply, State};
 			gen_server:cast(aggregator_dispatcher, {finished, State#state.docid}),
 			{stop, normal, State};
-		[CTask|Rest] ->
-			lager:info("Run ~p",[CTask]),
-			Append=case catch apply(CTask,process,[
-												   State#state.documentdata,
-												   {
-													State#state.document ++ [{fetchfun, State#state.fetchfun}],
-													State#state.documentagd
-												   },
-												   State#state.documentappend
-												  ]) of 
-				{ok, AppData} -> 
-						   MN=list_to_binary(atom_to_list(CTask)),
-						   State#state.documentappend++[ {<<MN/binary,".",K/binary>>,V} || {K,V} <- AppData ];
-				_Any -> 
-						   lager:error("Something went wrong with task ~p: ~p",[CTask, _Any]),
-						   lists:map(fun(E)->
-											 lager:error("At ~p",[E])
-									 end,erlang:get_stacktrace()),
 
-						   State#state.documentappend
-			%catch 
-			%	error:X ->
-			%		lager:error("Can't run ~p task: ~p",[CTask, X]),
-			%		State#state.documentappend
-			end,
-			gen_server:cast(self(), run_task),
-			{noreply, State#state{task=Rest,documentappend=Append}}
-	end;
+handle_cast(run_task, State) ->
+	[CrTask|Rest] = State#state.task,
+	CTask=proplists:get_value(CrTask, State#state.replace, CrTask),
+	lager:info("Car ~p Run ~p(~p)",[State#state.device_id, CTask,CrTask]),
+	Append=case catch apply(CTask,process,[
+										   State#state.documentdata,
+										   {
+											State#state.document ++ [{fetchfun, State#state.fetchfun}],
+											State#state.documentagd
+										   },
+										   State#state.documentappend,
+										   State#state.config
+										  ]) of 
+			   {ok, AppData} -> 
+				   TN=try 
+						  apply(CTask,storename,[])
+					  catch 
+						  _:_ -> 
+							  CTask
+					  end,
+				   MN=list_to_binary(atom_to_list(TN)),
+				   State#state.documentappend++[ {<<MN/binary,".",K/binary>>,V} || {K,V} <- AppData ];
+			   _Any -> 
+				   lager:error("Something went wrong with task ~p: ~p",[CTask, _Any]),
+				   lists:map(fun(E)->
+									 lager:error("At ~p",[E])
+							 end,erlang:get_stacktrace()),
+
+				   State#state.documentappend
+				   %catch 
+				   %	error:X ->
+				   %		lager:error("Can't run ~p task: ~p",[CTask, X]),
+				   %		State#state.documentappend
+		   end,
+	gen_server:cast(self(), run_task),
+	{noreply, State#state{task=Rest,documentappend=Append}};
 
 	
 handle_cast(_Msg, State) ->
@@ -266,4 +350,17 @@ did2key(DID) when is_binary(DID) ->
 
 did2key(DID) when is_tuple(DID) ->
 	DID.
+
+to_eatom(L) when is_atom(L) ->
+	L;
+	
+to_eatom(L) when is_binary(L) ->
+	to_eatom(binary_to_list(L));
+
+to_eatom(L) when is_list(L) ->
+	try 
+		list_to_existing_atom(L)
+	catch 
+		_:_ -> L
+	end.
 

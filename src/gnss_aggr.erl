@@ -11,7 +11,7 @@
 -behaviour(application).
 
 %% Application callbacks
--export([start/0, start/2, stop/1, init/1]).
+-export([start/0, stop/0, start/2, stop/1, init/1]).
 
 -define(MAX_RESTART,    10).
 -define(MAX_TIME,      60).
@@ -22,6 +22,9 @@
 
 start() ->
 	application:ensure_all_started(gnss_aggr).
+
+stop() ->
+	application:stop(gnss_aggr).
 
 start(_StartType, _StartArgs) ->
 	supervisor:start_link({local, ?MODULE}, ?MODULE, []).
@@ -49,8 +52,8 @@ init([]) ->
 	       {poolboy,start_link,[
 				    [{name,{local,ga_redis}},
 				     {worker_module,eredis},
-				     {size,3},
-				     {max_overflow,20}
+				     {size,10},
+				     {max_overflow,50}
 				    ],
 				    [ {host, RedisHost}, 
 				      {port, RedisPort}
@@ -63,8 +66,8 @@ init([]) ->
 		   {poolboy,start_link,[
 								[{name,{local,ga_mongo}},
 								 {worker_module,mc_worker},
-								 {size,3},
-								 {max_overflow,20}
+								 {size,30},
+								 {max_overflow,50}
 								],
 								MongoCfg
 							   ]},
@@ -93,7 +96,7 @@ init([]) ->
 	       {aggregator_dispatcher,start_link, [
 	       RedisHost, RedisPort, "aggregate"
 	        ] },
-	       permanent, 2000, supervisor, []
+	       permanent, 2000, worker, []
 	   }
 	  ]
 	 }

@@ -58,7 +58,7 @@ start_link(DocumentID,Aggregations) ->
 %% @end
 %%--------------------------------------------------------------------
 init([DocumentID,Tasks]) ->
-	lager:info("Document ~p, Aggr ~p",[DocumentID,Tasks]),
+	lager:debug("Document ~p, Aggr ~p",[DocumentID,Tasks]),
 	gen_server:cast(self(), run_task),
 	case mng:find_one(ga_mongo,<<"devicedata">>,did2key(DocumentID)) of
 		{DATA} ->
@@ -72,7 +72,8 @@ init([DocumentID,Tasks]) ->
 							{[[{aggregated,CAgd}]],CD3} ->
 								{mng:m2proplistr(CAgd), CD3};
 							_Any ->
-								lager:info("Agd2 ~p",[_Any]), {[],D2}
+								%lager:info("Agd2 ~p",[_Any]), 
+								{[],D2}
 						end,
 			Dev=proplists:get_value(device,D3),
 			Hr=proplists:get_value(hour,D3),
@@ -130,7 +131,7 @@ init([DocumentID,Tasks]) ->
 			%lager:info("AgReplace ~p",[AgReplace]),
 			Aggregations1=case Tasks of
 							  default -> 
-								 lager:info("Agg ~p",[DevCfg]),
+								 %lager:debug("Agg ~p",[DevCfg]),
 								  case proplists:get_value(aggregators_autorun,DevCfg) of
 									  Aggs0 when is_list(Aggs0) ->
 										  lists:filtermap(fun
@@ -255,13 +256,13 @@ handle_cast(run_task, State) when State#state.task==[] ->
 
 %			erlang:send_after(1000,self(),{finish}),
 %			{noreply, State};
-			gen_server:cast(aggregator_dispatcher, {finished, State#state.docid}),
+%			gen_server:cast(aggregator_dispatcher, {finished, State#state.docid}),
 			{stop, normal, State};
 
 handle_cast(run_task, State) ->
 	[CrTask|Rest] = State#state.task,
 	CTask=proplists:get_value(CrTask, State#state.replace, CrTask),
-	lager:info("Car ~p Run ~p(~p)",[State#state.device_id, CTask,CrTask]),
+	lager:debug("Car ~p Run ~p(~p)",[State#state.device_id, CTask,CrTask]),
 	Append=case catch apply(CTask,process,[
 										   State#state.documentdata,
 										   {
@@ -310,8 +311,9 @@ handle_cast(_Msg, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_info({finish},State) ->
-	gen_server:cast(aggregator_dispatcher, {finished, State#state.docid}),
+%	gen_server:cast(aggregator_dispatcher, {finished, State#state.docid}),
 	{stop, normal, State};
+
 handle_info(_Info, State) ->
     {noreply, State}.
 

@@ -1,6 +1,6 @@
 -module(agg_fuelgauge3).
 
--export([process/4,findFirst/2,storename/0]).
+-export([process/4,findFirst/2,storename/0,testx/0]).
 
 storename() ->
 	agg_fuelgauge.
@@ -20,6 +20,23 @@ storename() ->
 		  postscc=0,
 		  position
 		 }).
+
+r2pl(#pi_fuel_pdi{} = Rec) ->
+	  lists:zip(record_info(fields, pi_fuel_pdi), tl(tuple_to_list(Rec))).
+
+%recalc
+testx() ->
+	Filter={device,863,hour,{'$gt',399486-3,'$lt',399486+3}},
+	C=mng:find(mongo,<<"devicedata">>,Filter,{'_id',1}),
+	Res=mc_cursor:rest(C),
+	mc_cursor:close(C),
+	[ 
+	 poolboy:transaction(redis,
+						 fun(W)-> 
+								 K= <<(list_to_binary(mng:id2hex(ID)))/binary,":agg_fuelgauge3">>,
+								 eredis:q(W,[ "lpush", <<"aggregate:express">>, K])
+						 end) || {'_id',ID} <-Res ].  
+
 
 %recalc
 %f(C),C=mng:find(mongo,<<"devicedata">>,{device,864,hour,{'$gt',trunc(1433140800/3600)}},{'_id',1}),f(Res),Res=mc_cursor:rest(C),mc_cursor:close(C)
@@ -124,15 +141,15 @@ process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 	IHist1=lists:filtermap(HistProc, PH),
 	IHist2=lists:filtermap(HistProc, Data),
 	IHist=IHist1++IHist2,
-	lager:info("IH ~p",[length(IHist)]),
+	%lager:debug("IH ~p",[length(IHist)]),
 	try case length(IHist) > 2 of
 			true ->
 				%IH1=[ #pi_fuel_pdi{ dt=T, value=L } || {T,L} <- IHist ],
 				T1=traverse(IHist,[],[],[],Averages,a,EvThr,false),
 				T2a=traverse(T1,[],[],[],Averages,b,EvThr,false),
 				T2=traverse(T2a,false),
-				lager:info("T1 ~p",[T1]),
-				lager:info("T2 ~p",[T2]),
+				%lager:info("T1 ~p",[T1]),
+				%lager:info("T2 ~p",[T2]),
 				First=findFirst(T2,CHour*3600),
 
 				T2L=lists:map(fun(E) -> [<<"v3">>] ++ tl( erlang:tuple_to_list(E)) end, T2),
@@ -238,7 +255,7 @@ process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 		end
 	catch 
 		throw:no_sufficient_data ->
-				lager:info("Car ~p, hour ~p: No sufficient data",[DevID, CHour]),
+				lager:debug("Car ~p, hour ~p: No sufficient data",[DevID, CHour]),
 				{ok, [
 					  {<<"sum">>,0},
 					  {<<"diff">>,0},
@@ -316,7 +333,7 @@ findev3([Cur|Rest],CurEv,MinRF,MinDump) ->
 	end.
 
 traverse([],PrevPts,_,_,_,_,_,_) ->
-	lager:info("End ~p",[PrevPts]),
+%	lager:info("End ~p",[PrevPts]),
 	PrevPts;
 %traverse([Cur|Rest],[],Acc,AccL,AvgT,Dir,EvThr,A) ->
 %	traverse(Rest,[Cur],Acc,AccL,AvgT,Dir,EvThr,A);
@@ -342,10 +359,10 @@ traverse([Cur|Rest],PrevPts,Acc,AccL,AvgT,Dir,{ThrH,ThrL},Act) ->
 				 end
 		 end,
 	if Skip ->
-		   lager:info("Skip ~p",[Cur#pi_fuel_pdi.dt]),
+		   %lager:info("Skip ~p",[Cur#pi_fuel_pdi.dt]),
 		   traverse(Rest,PrevPts,Acc,AccL,AvgT,Dir,{ThrH,ThrL},Act);
 	   true ->
-		   lager:info("~p  ~p ...   ~p",[length(Acc),PrevPts,Cur]),
+%		   lager:info("~p  ~p ...   ~p",[length(Acc),PrevPts,Cur]),
 		   MinT=CurT-AvgT,
 		   MaxT=CurT+AvgT,
 		   %DxDt=(Cur#pi_fuel_pdi.value-Prev#pi_fuel_pdi.value) / (CurT-PrevT),
@@ -416,15 +433,15 @@ traverse([Cur|Rest],PrevPts,Acc,AccL,AvgT,Dir,{ThrH,ThrL},Act) ->
 							  Ev =:= true
 							 }
 					 end,
-		   if Dir == b ->
-				  lager:info("Point ~p", [Cur]),
+%		   if Dir == b ->
+%				  %lager:info("Point ~p", [Cur]),
 %				  lager:info("dir ~p Len1 ~p Len2 ~p RA ~p, R2 ~p",
 %							 [Dir,length(AccL1),length(AccL2),{RACnt,UASum},{R2Cnt,U2Sum}]),
 %				  lager:info("Pt ~p ~p",[Cur1#pi_fuel_pdi.postc,Cur1#pi_fuel_pdi.postsu]),
-				  ok;
-			  true ->
-				  ok
-		   end,
+%				  ok;
+%			  true ->
+%				  ok
+%		   end,
 
 		   traverse(Rest,[Cur1|PrevPts],Acc1 ++ [CurAcc], AccL2, AvgT, Dir,{ThrH,ThrL},NA)
 	end.

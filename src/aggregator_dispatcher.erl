@@ -138,10 +138,12 @@ handle_cast(run_queue, State) ->
 												 % Non-Express
 												 Tasks=default, %[agg_distance,agg_fuelmeter,agg_fuelgauge], 
 												 case supervisor:start_child(aggregator_sup,[Key,Tasks]) of
-													 {ok, Pid} -> lager:info("Data aggregator ~p runned ~p",[Key, Pid]),
-																  true;
-													 {error, Err} -> lager:error("Can't run data aggregator: ~p",[Err]),
-																	 error
+													 {ok, Pid} -> 
+														 lager:debug("Data aggregator ~p runned ~p",[Key, Pid]),
+														 true;
+													 {error, Err} -> 
+														 lager:error("Can't run data aggregator: ~p",[Err]),
+														 error
 												 end;
 											 _Any -> 
 												 lager:error("Can't parse source ~p",[NormalJSON]),
@@ -202,8 +204,8 @@ handle_cast(run_queue, State) ->
 			   %L: false - no more tasks, true - ok, error 
 			   case L of 
 				   true -> 
-					   gen_server:cast(self(),run_queue),
-					   State;
+					   State#state{timer=erlang:send_after(1,self(),run_queue)};
+%						self() ! run_queue;
 				   false -> 
 					   State#state{timer=erlang:send_after(10000,self(),run_queue)};
 				   error -> 
@@ -230,14 +232,13 @@ handle_cast(_Msg, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_info(run_queue, State) ->
-	gen_server:cast(self(),run_queue),
-	{noreply, State};
+	handle_cast(run_queue,State);
 
 handle_info({message,_Chan,_Payload,SrcPid}, State) ->
 	%lager:info("Message ~p",[Payload]),
 	eredis_sub:ack_message(SrcPid),
-	gen_server:cast(self(),run_queue),
 	{noreply, State};
+	%handle_cast(run_queue,State);
 
 handle_info({subscribed,_Chan,SrcPid}, State) ->
 	eredis_sub:ack_message(SrcPid),

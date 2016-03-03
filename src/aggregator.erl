@@ -128,7 +128,8 @@ init([DocumentID,Tasks]) ->
 							 lager:notice("DevCfg error ~p:~p",[ErC,ErR]),
 							 {[],[],[]}
 				   end,
-			%lager:info("AgReplace ~p",[AgReplace]),
+%			lager:info("Cfg ~p",[AgCfg]),
+%			lager:info("AgReplace ~p",[AgReplace]),
 			Aggregations1=case Tasks of
 							  default -> 
 								 %lager:debug("Agg ~p",[DevCfg]),
@@ -218,6 +219,7 @@ handle_call(_Request, _From, State) ->
 handle_cast(run_task, State) when State#state.task==[] ->
 			AppD=[ { <<"aggregated.",K/binary>>, V } || {K,V} <- State#state.documentappend ],
 			Data={'$set', mng:proplisttom(AppD)},
+			lager:info("Hour ~p",[State#state.hour]),
 			BinHr=integer_to_binary(State#state.hour),
 			AggrD=[ { <<BinHr/binary,".",K/binary>>, V } || {K,V} <- State#state.documentappend ],
 			Res=poolboy:transaction(ga_mongo, 

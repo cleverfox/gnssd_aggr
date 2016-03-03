@@ -28,7 +28,10 @@ findFirst([L|Rest],Time) ->
 			findFirst(Rest,Time)
 	end.
 
-process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
+process(_Data,{_ExtInfo,_PrevAggregated},_Prev,_Config) ->
+	{ok, [ ]}.
+
+process_old(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 	{MSec,Sec,_} = now(),
 	Unixtime=MSec*1000000 + Sec,
 	CHour=proplists:get_value(hour,ExtInfo),
@@ -43,19 +46,19 @@ process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 												 )
 							 ),
 	MinDump=proplists:get_value(mindump,MyC,
-							  proplists:get_value("mindump",MyC,
-												  0.1
-												 )
-							 ),
+								proplists:get_value("mindump",MyC,
+													0.1
+												   )
+							   ),
 	Averages=proplists:get_value(averages,MyC,
 								 proplists:get_value("averages",MyC,
 													 120
 													)
 								),
 	Threshold=proplists:get_value(threshold,MyC,
-								 proplists:get_value("threshold",MyC,
-													 160
-													) 
+								  proplists:get_value("threshold",MyC,
+													  160
+													 ) 
 								 ),
 	EvThr={
 	  proplists:get_value(threshold_h,MyC,
@@ -84,23 +87,23 @@ process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 	%lager:debug("Car ~p PrevHr prepend ~p",[DevID,PH]),
 
 	HistProc=fun(DS) ->
-					case proplists:get_value(dt,DS) of
-						undefined ->
-							false;
-						DT ->
-							case proplists:get_value(v_fuel,DS) of
-								undefined ->
-									false;
-								0 -> 
-									false;
-								FV when is_float(FV) orelse is_integer(FV)->
-									{true,
-									 #pi_fuel_pdi{ dt=DT, value=FV }
-									};
-								_ -> false
-							end
-					end
-			end,
+					 case proplists:get_value(dt,DS) of
+						 undefined ->
+							 false;
+						 DT ->
+							 case proplists:get_value(v_fuel,DS) of
+								 undefined ->
+									 false;
+								 0 -> 
+									 false;
+								 FV when is_float(FV) orelse is_integer(FV)->
+									 {true,
+									  #pi_fuel_pdi{ dt=DT, value=FV }
+									 };
+								 _ -> false
+							 end
+					 end
+			 end,
 	IHist1=lists:filtermap(HistProc, PH),
 	IHist2=lists:filtermap(HistProc, Data),
 	IHist=IHist1++IHist2,
@@ -123,17 +126,17 @@ process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 
 				[Last|_]=T1,
 				TotalDiff=
-					if Last#pi_fuel_pdi.prevc > 1 ->
-						   Last#pi_fuel_pdi.prevsu/Last#pi_fuel_pdi.prevc;
-					   true ->
-						   Last#pi_fuel_pdi.value 
-					end
-					- 
-					if First#pi_fuel_pdi.prevc > 1 ->
-						   First#pi_fuel_pdi.prevsu/First#pi_fuel_pdi.prevc;
-					   true ->
-						   First#pi_fuel_pdi.value 
-					end,
+				if Last#pi_fuel_pdi.prevc > 1 ->
+					   Last#pi_fuel_pdi.prevsu/Last#pi_fuel_pdi.prevc;
+				   true ->
+					   Last#pi_fuel_pdi.value 
+				end
+				- 
+				if First#pi_fuel_pdi.prevc > 1 ->
+					   First#pi_fuel_pdi.prevsu/First#pi_fuel_pdi.prevc;
+				   true ->
+					   First#pi_fuel_pdi.value 
+				end,
 				Events=findev(T2,Averages,0,Threshold,MinRF,MinDump),
 				lager:debug("Car ~p Found fuel events ~p",[DevID,Events]),
 
@@ -142,7 +145,7 @@ process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 											Sum+Amount
 									end, 0, Events),
 
-				poolboy:transaction(redis,
+				poolboy:transaction(ga_redis,
 									fun(W)->
 											DKey="device:fuel:"++integer_to_list(DevID)++":"++integer_to_list(CHour)++":",
 											if 
@@ -198,44 +201,44 @@ process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 		end
 	catch 
 		throw:no_sufficient_data ->
-				lager:info("Car ~p, hour ~p: No sufficient data",[DevID, CHour]),
-				{ok, [
-					  {<<"sum">>,0},
-					  {<<"diff">>,0},
-					  {<<"events">>,[]},
-					  {<<"t">>, Unixtime},
-					  {<<"p_total">>,length(Data)},
-					  {<<"p_valid">>,length(IHist2)},
-					  {<<"p_anal">>,length(IHist)}
-					 ]};
+			lager:info("Car ~p, hour ~p: No sufficient data",[DevID, CHour]),
+			{ok, [
+				  {<<"sum">>,0},
+				  {<<"diff">>,0},
+				  {<<"events">>,[]},
+				  {<<"t">>, Unixtime},
+				  {<<"p_total">>,length(Data)},
+				  {<<"p_valid">>,length(IHist2)},
+				  {<<"p_anal">>,length(IHist)}
+				 ]};
 		throw:Ee ->
-			  lager:error("Error throw ~p in ~p hour ~p",[Ee,ExtInfo,CHour]),
-			  lager:error("Data ~p",[Data]),
-			  lists:map(fun(E)->
-								lager:error("At ~p",[E])
-						end,erlang:get_stacktrace()),
-			  throw(Ee);
+			lager:error("Error throw ~p in ~p hour ~p",[Ee,ExtInfo,CHour]),
+			lager:error("Data ~p",[Data]),
+			lists:map(fun(E)->
+							  lager:error("At ~p",[E])
+					  end,erlang:get_stacktrace()),
+			throw(Ee);
 		exit:Ee ->
-			  lager:error("Error exit ~p in ~p hour ~p",[Ee,ExtInfo,CHour]),
-			  lager:error("Data ~p",[Data]),
-			  lists:map(fun(E)->
-								lager:error("At ~p",[E])
-						end,erlang:get_stacktrace()),
-			  exit(Ee);
+			lager:error("Error exit ~p in ~p hour ~p",[Ee,ExtInfo,CHour]),
+			lager:error("Data ~p",[Data]),
+			lists:map(fun(E)->
+							  lager:error("At ~p",[E])
+					  end,erlang:get_stacktrace()),
+			exit(Ee);
 		error:Ee ->
-			  lager:error("Error ~p in ~p hour ~p",[Ee,ExtInfo,CHour]),
-			  lager:error("Data ~p",[Data]),
-			  lists:map(fun(E)->
-								lager:error("At ~p",[E])
-						end,erlang:get_stacktrace()),
-			  erlang:error(Ee);
+			lager:error("Error ~p in ~p hour ~p",[Ee,ExtInfo,CHour]),
+			lager:error("Data ~p",[Data]),
+			lists:map(fun(E)->
+							  lager:error("At ~p",[E])
+					  end,erlang:get_stacktrace()),
+			erlang:error(Ee);
 		Ec:Ee ->
-			  lager:error("Error ~p:~p in ~p hour ~p",[Ec,Ee,ExtInfo,CHour]),
-			  lager:error("Data ~p",[Data]),
-			  lists:map(fun(E)->
-								lager:error("At ~p",[E])
-						end,erlang:get_stacktrace()),
-			  throw({Ec,Ee})
+			lager:error("Error ~p:~p in ~p hour ~p",[Ec,Ee,ExtInfo,CHour]),
+			lager:error("Data ~p",[Data]),
+			lists:map(fun(E)->
+							  lager:error("At ~p",[E])
+					  end,erlang:get_stacktrace()),
+			throw({Ec,Ee})
 	end.
 
 findev([],_,_,_,_,_) ->

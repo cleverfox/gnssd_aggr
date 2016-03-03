@@ -31,7 +31,7 @@ testx() ->
 	Res=mc_cursor:rest(C),
 	mc_cursor:close(C),
 	[ 
-	 poolboy:transaction(redis,
+	 poolboy:transaction(ga_redis,
 						 fun(W)-> 
 								 K= <<(list_to_binary(mng:id2hex(ID)))/binary,":agg_fuelgauge3">>,
 								 eredis:q(W,[ "lpush", <<"aggregate:express">>, K])
@@ -192,7 +192,7 @@ process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 											Sum+Amount
 									end, 0, Events),
 
-				poolboy:transaction(redis,
+				poolboy:transaction(ga_redis,
 									fun(W)->
 											DKey="device:fuel:"++integer_to_list(DevID)++":"++integer_to_list(CHour)++":",
 											if 

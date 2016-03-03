@@ -132,6 +132,7 @@ handle_cast(run_queue, State) ->
 								 case NormalJSON of 
 									 undefined -> false;
 									 _ -> 
+										 %lager:info("Normal JS ~p",[NormalJSON]),
 										 try mochijson2:decode(NormalJSON) of
 											 {struct,List} when is_list(List) ->
 												 Key=mng:proplisttom(List),

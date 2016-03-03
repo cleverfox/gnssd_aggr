@@ -43,7 +43,7 @@ testx() ->
 	%Res=Get(863,399487,399487),
 	%Filter={device,428,hour,398985},
 	[ 
-	 poolboy:transaction(redis,
+	 poolboy:transaction(ga_redis,
 						 fun(W)-> 
 								 LID=mng:id2hex(ID),
 								 K= <<(list_to_binary(LID))/binary,":agg_fuelgauge2">>,
@@ -188,7 +188,7 @@ process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 											Sum+Amount
 									end, 0, Events),
 
-				poolboy:transaction(redis,
+				poolboy:transaction(ga_redis,
 									fun(W)->
 											DKey="device:fuel:"++integer_to_list(DevID)++":"++integer_to_list(CHour)++":",
 											if 

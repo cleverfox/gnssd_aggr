@@ -25,6 +25,7 @@
 		  hour, 
 		  type,
 		  fetchfun,
+		  hints,
 		  config
 		 }).
 
@@ -80,6 +81,17 @@ init([DocumentID,Tasks]) ->
 			Type=proplists:get_value(type,D3),
 			lager:debug("D3   ~p",[D3]),
 			lager:debug("Dadg ~p",[Agd]),
+
+			Hints=try
+					  case mng:find_one(ga_mongo,<<"hints">>,{device,Dev,hour,Hr,type,hints}) of
+						  {HINTS} -> 
+							  proplists:get_value(hints, mng:m2proplistr(HINTS), []);
+						  _ -> []
+					  end
+				  catch _:_ ->
+							[]
+				  end,
+
 			%lager:info("Data ~p",[Dat]),
 			%
 			{DevCfg,AgCfg,AgReplace}=try
@@ -166,6 +178,7 @@ init([DocumentID,Tasks]) ->
 					device_id=Dev, 
 					hour=Hr, 
 					type=Type,
+					hints=Hints,
 					fetchfun=fun(FHour) ->
 									 Hour=case FHour of
 											  _ when is_integer(FHour) -> 
@@ -219,7 +232,7 @@ handle_call(_Request, _From, State) ->
 handle_cast(run_task, State) when State#state.task==[] ->
 			AppD=[ { <<"aggregated.",K/binary>>, V } || {K,V} <- State#state.documentappend ],
 			Data={'$set', mng:proplisttom(AppD)},
-			lager:info("Hour ~p",[State#state.hour]),
+			lager:info("Device ~p Hour ~p",[State#state.device_id,State#state.hour]),
 			BinHr=integer_to_binary(State#state.hour),
 			AggrD=[ { <<BinHr/binary,".",K/binary>>, V } || {K,V} <- State#state.documentappend ],
 			Res=poolboy:transaction(ga_mongo, 
@@ -268,7 +281,11 @@ handle_cast(run_task, State) ->
 	Append=case catch apply(CTask,process,[
 										   State#state.documentdata,
 										   {
-											State#state.document ++ [{fetchfun, State#state.fetchfun}],
+											State#state.document ++ [
+											 {fetchfun, State#state.fetchfun},
+											 {hints, State#state.hints}
+											]
+											,
 											State#state.documentagd
 										   },
 										   State#state.documentappend,

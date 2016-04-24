@@ -2,7 +2,7 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
--export([process/4,findFirst/2,storename/0,test_histfilter/0,testx/0]).
+-export([process/4,findFirst/2,storename/0,test_histfilter/0,testx/0,median/1]).
 
 storename() ->
 	agg_fuelgauge.
@@ -18,6 +18,8 @@ storename() ->
 		  prevc=0,
 		  postsu=0,
 		  postc=0,
+		  prevmedian=0,
+		  postmedian=0,
 		  position
 		 }).
 
@@ -71,8 +73,16 @@ hist_odo([#pi_fuel_pdi{ do = DO } = H|Rest], SO) ->
 	[H#pi_fuel_pdi{ ao = SO2 } | hist_odo(Rest, SO2)].
 
 process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
-	{MSec,Sec,_} = now(),
-	Unixtime=MSec*1000000 + Sec,
+	MyHints=try 
+				proplists:get_value(fuel,proplists:get_value(hints,ExtInfo,[]),undefinde)
+			catch _:_ -> undefined
+			end,
+	lager:error("Hints ~p",[MyHints]),
+	process_normal(Data,ExtInfo,Config,MyHints).
+	
+process_normal(Data,ExtInfo,Config,Hinted) ->
+	DevID=proplists:get_value(device,ExtInfo),
+	Unixtime=os:system_time(seconds),
 	CHour=proplists:get_value(hour,ExtInfo),
 	DevID=proplists:get_value(device,ExtInfo),
 	AllC=maps:get(aggregators,Config,#{}),
@@ -138,8 +148,21 @@ process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 		   end,
 	%lager:debug("Car ~p PrevHr prepend ~p",[DevID,IHist1]),
 	IHist=IHist1++IHist2,
-%	lager:error("Car ~p diff prepend ~p",[DevID,IHist]),
+	lager:debug("Car ~p full ds ~p",[DevID,IHist]),
+	
+	DumpCSV=lists:map(fun(P) ->
+							  [_,DT|L]=erlang:tuple_to_list(P),
+							  [io_lib:format("~p;~p;",
+											[
+											 calendar:gregorian_seconds_to_datetime(DT+62167219200),
+											 DT
+											]),
+							  lists:map(fun(Pe) ->
+												io_lib:format("~p;", [ Pe ])
+										end,L)  , "\n"]
+					  end, IHist),
 
+	file:write_file( "test_"++integer_to_list(DevID)++".txt", iolist_to_binary(DumpCSV)), 
 	try case length(IHist) > 2 of
 			true ->
 				IHistO=hist_odo(IHist,0),
@@ -148,7 +171,19 @@ process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 				T2=traverse(T1,[],[],Averages_m,b),
 				%IHist=differentiation(IHist1++IHist2),
 
-				T2L=lists:map(fun(E) -> r2pl(E) end, T2),
+				T2L=lists:map(fun(E) -> r2pl(E) end, 
+
+							  lists:map(fun(A1) ->
+												Vol= if A1#pi_fuel_pdi.postc > 0 andalso A1#pi_fuel_pdi.prevc > 0 ->
+															%A1#pi_fuel_pdi.postsu/A1#pi_fuel_pdi.postc -  %old
+															%A1#pi_fuel_pdi.prevsu/A1#pi_fuel_pdi.prevc;
+															A1#pi_fuel_pdi.postmedian - A1#pi_fuel_pdi.prevmedian;
+														true -> undefined
+													 end,
+												A1#pi_fuel_pdi{value=Vol}
+										end,
+										T2)
+							 ),
 				%lager:debug("T2: ~p",[ T2L ]),
 				DumpFN= <<"/tmp/agg_fuel.",
 								  (integer_to_binary(DevID))/binary,
@@ -171,17 +206,32 @@ process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 				[Last|_]=T1,
 				TotalDiff=
 					if Last#pi_fuel_pdi.prevc > 1 ->
-						   Last#pi_fuel_pdi.prevsu/Last#pi_fuel_pdi.prevc;
+						   Last#pi_fuel_pdi.prevmedian;
+%						   Last#pi_fuel_pdi.prevsu/Last#pi_fuel_pdi.prevc; %old
 					   true ->
 						   Last#pi_fuel_pdi.value 
 					end
 					- 
 					if First#pi_fuel_pdi.prevc > 1 ->
-						   First#pi_fuel_pdi.prevsu/First#pi_fuel_pdi.prevc;
+						   First#pi_fuel_pdi.prevmedian;
+%						   First#pi_fuel_pdi.prevsu/First#pi_fuel_pdi.prevc; %old
 					   true ->
 						   First#pi_fuel_pdi.value 
 					end,
-				Events=findev(T2,Averages_m,0,MinRF,MinDump,none),
+				Events=if is_list(Hinted) -> 
+							  %{Timestamp,Volume,T1,T2,Position}
+							  lists:map(fun(HintList) ->
+												{
+												 trunc(proplists:get_value(dt,HintList, 0)),
+												 proplists:get_value(amount,HintList, 0),
+												 trunc(proplists:get_value(t1,HintList, 0)),
+												 trunc(proplists:get_value(t2,HintList, 0)),
+												 [0,0]
+												}
+										end, Hinted);
+						   true -> 
+							   findev(T2,Averages_m,0,MinRF,MinDump,none)
+					   end,
 				lager:debug("Car ~p Found fuel events ~p",[DevID,Events]),
 
 				Changes=lists:foldl(fun({_,Amount,_,_,_},Sum) ->
@@ -299,15 +349,16 @@ findev([A1,A2|Rest],Averages,LastEv,MinRF,MinDump,EvB) ->
 	   A1#pi_fuel_pdi.postc == 0 orelse
 	   A2#pi_fuel_pdi.postc == 0 ->
 		   findev([A2|Rest],Averages,LastEv,MinRF,MinDump,EvB);
-	   LastEv+Averages > A1#pi_fuel_pdi.ao -> %make event shadow
-		   findev([A2|Rest],Averages,LastEv,MinRF,MinDump,EvB);
+%	   LastEv+Averages > A1#pi_fuel_pdi.ao -> %make event shadow
+%		   findev([A2|Rest],Averages,LastEv,MinRF,MinDump,EvB);
 %	   A1#pi_fuel_pdi.dt >= A2#pi_fuel_pdi.dt ->
 %		   findev([A2|Rest],Averages,LastEv,MinRF,MinDump,EvB);
 	   true ->
-		   Vol=A2#pi_fuel_pdi.postsu/A2#pi_fuel_pdi.postc - A1#pi_fuel_pdi.prevsu/A1#pi_fuel_pdi.prevc,
+		   Vol=A2#pi_fuel_pdi.postmedian - A1#pi_fuel_pdi.prevmedian,
+		   %Vol=A2#pi_fuel_pdi.postsu/A2#pi_fuel_pdi.postc - A1#pi_fuel_pdi.prevsu/A1#pi_fuel_pdi.prevc, %old
 		   
 		   EvB2=if Vol > 0 andalso Vol*2> MinRF andalso (EvB == none orelse element(1,EvB)==1) ->
-						%lager:debug("Event ~p ~p",[A2#pi_fuel_pdi.dt, Vol]),
+						lager:debug("Event ~p ~p",[A2#pi_fuel_pdi.dt, Vol]),
 						case EvB of
 							{1, E1, _, PVol, PStop} ->
 								{1, E1, A2, 
@@ -318,7 +369,7 @@ findev([A1,A2|Rest],Averages,LastEv,MinRF,MinDump,EvB) ->
 								{1, A1, A2, Vol, A1#pi_fuel_pdi.stop or A2#pi_fuel_pdi.stop}
 						end;
 					Vol < 0 andalso -Vol*2 > MinDump andalso (EvB == none orelse element(1,EvB)==-1) ->
-						%lager:debug("Event ~p ~p",[A2#pi_fuel_pdi.dt, Vol]),
+						lager:debug("Event ~p ~p",[A2#pi_fuel_pdi.dt, Vol]),
 						case EvB of
 							{-1, E1, _, PVol, PStop} ->
 								{-1, E1, A2, 
@@ -336,8 +387,9 @@ findev([A1,A2|Rest],Averages,LastEv,MinRF,MinDump,EvB) ->
 								 {_, Ev1, Ev2, _MaxVol, Stopped} when EvB2 == none ->
 									 T1=Ev1#pi_fuel_pdi.dt,
 									 T2=Ev2#pi_fuel_pdi.dt,
-									 Volume=(Ev2#pi_fuel_pdi.postsu/Ev2#pi_fuel_pdi.postc) - 
-									 (Ev1#pi_fuel_pdi.prevsu/Ev1#pi_fuel_pdi.prevc),
+									 %Volume=(Ev2#pi_fuel_pdi.postsu/Ev2#pi_fuel_pdi.postc) -  %old
+									 %(Ev1#pi_fuel_pdi.prevsu/Ev1#pi_fuel_pdi.prevc),
+									 Volume=Ev2#pi_fuel_pdi.postmedian - Ev1#pi_fuel_pdi.prevmedian,
 									 EvTime=T2,
 									 {
 									  if 
@@ -402,14 +454,23 @@ traverse([Cur|Rest],[Prev|Passed],Acc,AvgD,Dir) ->
 							  end,
 							  {0,0},
 							  Acc1b),
+		   RMedian=median(
+					 lists:map(
+					   fun({_,Dvl}) -> 
+							   Dvl 
+					   end, 
+					   Acc1b)
+					),
 		   Cur1=case Dir of
 					a ->
 						Cur#pi_fuel_pdi{
+						  prevmedian=RMedian,
 						  prevc=RCnt,
 						  prevsu=USum
 						 };
 					b ->
 						Cur#pi_fuel_pdi{
+						  postmedian=RMedian,
 						  postc=RCnt,
 						  postsu=USum
 						 }
@@ -556,5 +617,20 @@ test_histfilter() ->
 
 	true.
 
+median([]) ->
+	null;
+median([E]) ->
+	E;
+median(List) ->
+	LL=length(List),
+	SL=lists:sort(List),
+	DropL=(LL div 2)-1,
+	{_,[M1,M2|_]}=lists:split(DropL,SL),
+	case LL rem 2 of
+		0 -> %even elements
+			(M1+M2)/2;
+		1 -> %odd
+			M2
+	end.
 
 

@@ -171,19 +171,19 @@ process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 				end,
 
 
-				[Last|_]=T1,
-				TotalDiff=
-					if Last#pi_fuel_pdi.prevc > 1 ->
-						   Last#pi_fuel_pdi.prevsu/Last#pi_fuel_pdi.prevc;
-					   true ->
-						   Last#pi_fuel_pdi.value 
-					end
-					- 
-					if First#pi_fuel_pdi.prevc > 1 ->
-						   First#pi_fuel_pdi.prevsu/First#pi_fuel_pdi.prevc;
-					   true ->
-						   First#pi_fuel_pdi.value 
-					end,
+%				[Last|_]=T1,
+%				TotalDiff=
+%					if Last#pi_fuel_pdi.prevc > 1 ->
+%						   Last#pi_fuel_pdi.prevsu/Last#pi_fuel_pdi.prevc;
+%					   true ->
+%						   Last#pi_fuel_pdi.value 
+%					end
+%					- 
+%					if First#pi_fuel_pdi.prevc > 1 ->
+%						   First#pi_fuel_pdi.prevsu/First#pi_fuel_pdi.prevc;
+%					   true ->
+%						   First#pi_fuel_pdi.value 
+%					end,
 					%Events=findev(T2,Averages,0,Threshold,MinRF,MinDump),
 					Events=findev3(T2,undefined,MinRF,MinDump),
 				lager:debug("Car ~p Found fuel events ~p",[DevID,Events]),
@@ -215,13 +215,15 @@ process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 									end),
 
 
-				lager:debug("Car ~p Delta ~p / ~p / ~p",[DevID, TotalDiff, Changes, TotalDiff - Changes]),
 
 				GetTF=fun(#pi_fuel_pdi{ dt=CDT, value=CFV }) ->
 							  {CDT, CFV}
 					  end,
 				{Time1,Fuel1}=GetTF(hd(IHist2)),
 				{Time2,Fuel2}=GetTF(lists:last(IHist2)),
+
+				TotalDiff=Fuel2-Fuel1,
+				lager:debug("Car ~p Delta ~p / ~p / ~p",[DevID, TotalDiff, Changes, TotalDiff - Changes]),
 				lager:info("Time ~p -> ~p, Fuel ~p -> ~p, Evs ~p",
 						   [Time1,Time2,Fuel1,Fuel2, Events]),
 				{ok, [

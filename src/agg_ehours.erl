@@ -2,28 +2,42 @@
 
 -export([process/4]).
 
-process(Data,{_ExtInfo,_PrevAggregated},_Prev,Config) ->
+process(Data,{ExtInfo,_PrevAggregated},_Prev,Config) ->
 	AllC=maps:get(aggregators,Config,#{}),
 	MyC=maps:get(?MODULE,AllC,[]),
-	lager:info("My config ~p",[MyC]),
+	lager:info("My config ~p~n ~p",[MyC,ExtInfo]),
+	Hour=proplists:get_value(hour,ExtInfo,0),
+	T1=(Hour)*3600,
+	T2=(Hour+1)*3600,
 	Sense=proplists:get_value("sense",MyC,[]),
 
 	{_,_,Sum}=lists:foldl(fun(Element,{Pre,PrevT,TimeSumm})->
 						CurT=proplists:get_value(dt,Element),
-						case Pre of 
-							undefined ->
-								{Element,CurT,TimeSumm};
-							_ ->
-								Run=is_run(Element,Pre,Sense),
-								TSum=if Run ->
-											TimeSumm+CurT-PrevT;
-										true -> TimeSumm
-									 end,
-								{Element,CurT,TSum}
+						if CurT>=T1 andalso T2>CurT ->
+							   case Pre of 
+								   undefined ->
+									   lager:debug("E ~p",[CurT]),
+									   {Element,CurT,TimeSumm};
+								   _ ->
+									   Run=is_run(Element,Pre,Sense),
+									   lager:debug("E: ~p ~p + ~p",[Run,CurT,CurT-PrevT]),
+									   TSum=if Run ->
+												   TimeSumm+CurT-PrevT;
+											   true -> TimeSumm
+											end,
+									   {Element,CurT,TSum}
+							   end;
+						   CurT < T1 ->
+							   lager:debug("noskip ~p",[CurT]),
+							   {Element, CurT, TimeSumm};
+						   true ->
+							   lager:debug("skip ~p",[CurT]),
+							   {Pre, PrevT, TimeSumm}
 						end
 				end,{undefined,0,0},Data),
 	lager:info("Config my  ~p",[MyC]),
 	{MSec,Sec,_} = now(),
+	lager:info("Sum ~p",[Sum]),
 	{ok, [
 		  {<<"t">>, MSec*1000000 + Sec},
 		  {<<"sum">>, Sum}

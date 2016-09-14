@@ -247,7 +247,7 @@ process_normal(Data,ExtInfo,Config,Hinted) ->
 													RLS=lists:foldl(
 														  fun({TS,Amount,_,_,_},Sum) ->
 																  Sum++[TS,
-																		float_to_binary(Amount, [{decimals, 4}, compact])
+																		f2bin(Amount)
 																	   ]
 														  end, 
 														  ["hmset",KeyH], 
@@ -632,5 +632,11 @@ median(List) ->
 		1 -> %odd
 			M2
 	end.
+
+f2bin(X) when is_float(X) ->
+	float_to_binary(X, [{decimals, 4}, compact]);
+
+f2bin(X) when is_integer(X) ->
+	integer_to_binary(X).
 
 
